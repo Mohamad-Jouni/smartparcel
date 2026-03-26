@@ -7,6 +7,7 @@
 # -------------------------------------------------------
 import boto3
 import uuid
+import json
 from flask import Flask, request, jsonify
 
 app = Flask(__name__)
@@ -17,6 +18,9 @@ parcel_table = dynamodb.Table('smartparcel-parcels')
 
 s3_client = boto3.client('s3', region_name='ap-southeast-2')
 PHOTO_BUCKET = 'smartparcel-photos-20220001249'
+
+sqs_client = boto3.client('sqs', region_name='ap-southeast-2')
+QUEUE_URL = 'https://sqs.ap-southeast-2.amazonaws.com/341907318075/smartparcel-notifications-20220001249'
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -54,13 +58,45 @@ def upload_photo(parcel_id):
         return jsonify({"error": "Empty filename"}), 400
         
     try:
-        # Save file to S3 inside a folder named after the parcel ID
         s3_filename = f"{parcel_id}/{uuid.uuid4().hex}_{file.filename}"
         s3_client.upload_fileobj(file, PHOTO_BUCKET, s3_filename)
-        
         return jsonify({"message": "Photo uploaded successfully to S3", "path": s3_filename}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/parcel/<parcel_id>/status', methods=['PUT'])
+def update_status(parcel_id):
+    data = request.json
+    new_status = data.get('status')
+    
+    # 1. Get the existing parcel to find the customer's email
+    response = parcel_table.get_item(Key={'parcel_id': parcel_id})
+    if 'Item' not in response:
+        return jsonify({"error": "Parcel not found"}), 404
+        
+    customer_email = response['Item']['customer_email']
+    
+    # 2. Update the status in DynamoDB
+    parcel_table.update_item(
+        Key={'parcel_id': parcel_id},
+        UpdateExpression="set #st = :s",
+        ExpressionAttributeNames={'#st': 'status'},
+        ExpressionAttributeValues={':s': new_status}
+    )
+    
+    # 3. Send Notification to SQS to trigger the email
+    message_body = {
+        'parcel_id': parcel_id,
+        'new_status': new_status,
+        'customer_email': customer_email
+    }
+    
+    sqs_client.send_message(
+        QueueUrl=QUEUE_URL,
+        MessageBody=json.dumps(message_body)
+    )
+    
+    return jsonify({"message": "Status updated and email notification triggered"}), 200
 
 # THIS MUST BE AT THE VERY BOTTOM!
 if __name__ == '__main__':
