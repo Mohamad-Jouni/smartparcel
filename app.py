@@ -46,7 +46,7 @@ def security_check():
 
     # 3. SQL Injection / Input Validation
     if request.is_json and request.json:
-        payload_str = str(request.json).upper()
+        payload_str = request.get_data(as_text=True).upper()
         if any(bad_string in payload_str for bad_string in ["'", "DROP TABLE", "SELECT *"]):
             return jsonify({"error": "Invalid characters detected. SQL Injection attempt blocked."}), 400
 
